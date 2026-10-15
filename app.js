@@ -54,7 +54,7 @@ const state = {
   user: null, hid: null, hh: null, role: null, myName: '',
   members: [], accounts: [], categories: [], goals: [], tx: [],
   month: today().slice(0, 7), view: 'painel', limit: 100,
-  f: { q: '', kind: '', account: '', category: '', member: '', period: 'month' },
+  f: { q: '', kind: '', account: '', category: '', member: '', period: 'month', status: '' },
 };
 let charts = [], chan = null, reloadTimer = null;
 
@@ -63,7 +63,12 @@ const accById = id => state.accounts.find(a => a.id === id);
 const memberName = uid => state.members.find(m => m.user_id === uid)?.display_name || '—';
 const monthTx = () => state.tx.filter(t => t.date.startsWith(state.month));
 const txSum = (list, kind) => sum(list.filter(t => t.kind === kind).map(t => t.amount));
-const accBalance = a => num(a.initial_balance) + txSum(state.tx.filter(t => t.account_id === a.id), 'income') - txSum(state.tx.filter(t => t.account_id === a.id), 'expense');
+const isPaid = t => t.status !== 'pending';
+const isOverdue = t => !isPaid(t) && t.date < today();
+const accBalance = a => {
+  const own = state.tx.filter(t => t.account_id === a.id && isPaid(t));
+  return num(a.initial_balance) + txSum(own, 'income') - txSum(own, 'expense');
+};
 
 /* ---------- Modal ---------- */
 function modal(title, body, onSubmit, { submit = 'Salvar' } = {}) {
@@ -248,13 +253,21 @@ function vPainel() {
     .map(c => ({ c, spent: sum(mt.filter(t => t.category_id === c.id && t.kind === 'expense').map(t => t.amount)) }))
     .sort((a, b) => b.spent / b.c.monthly_budget - a.spent / a.c.monthly_budget).slice(0, 5);
   const hasExp = exp > 0;
+  const pInc = txSum(mt.filter(isPaid), 'income'), pExp = txSum(mt.filter(isPaid), 'expense');
+  const pend = state.tx.filter(t => !isPaid(t)).sort((x, y) => x.date.localeCompare(y.date));
+  const pendingCard = pend.length ? `<div class="card" style="margin-bottom:1rem">
+    <div class="view-head" style="margin-bottom:.25rem"><h3 style="margin:0">Contas a pagar e a receber</h3>
+      <div class="small"><span class="expense">A pagar ${brl(txSum(pend, 'expense'))}</span> · <span class="income">A receber ${brl(txSum(pend, 'income'))}</span></div></div>
+    <div class="list">${pend.slice(0, 8).map(txRow).join('')}</div>
+    ${pend.length > 8 ? `<p class="center small muted">+ ${pend.length - 8} pendentes — veja em Lançamentos (filtro “Pendentes”)</p>` : ''}</div>` : '';
   return `
   <div class="stats">
-    <div class="card stat"><div class="label">Receitas</div><div class="value income num">${brl(inc)}</div></div>
-    <div class="card stat"><div class="label">Despesas</div><div class="value expense num">${brl(exp)}</div></div>
+    <div class="card stat"><div class="label">Receitas</div><div class="value income num">${brl(inc)}</div><div class="sub">Recebido ${brl(pInc)} · A receber ${brl(inc - pInc)}</div></div>
+    <div class="card stat"><div class="label">Despesas</div><div class="value expense num">${brl(exp)}</div><div class="sub">Pago ${brl(pExp)} · A pagar ${brl(exp - pExp)}</div></div>
     <div class="card stat"><div class="label">Resultado do mês</div><div class="value num ${inc - exp >= 0 ? 'income' : 'expense'}">${brl(inc - exp)}</div></div>
     <div class="card stat"><div class="label">Saldo nas contas</div><div class="value num">${brl(total)}</div></div>
   </div>
+  ${pendingCard}
   <div class="cols">
     <div class="card"><h3>Despesas por categoria</h3>
       ${hasExp ? '<div class="chart-box"><canvas id="chCat"></canvas></div>' : '<div class="empty">Sem despesas neste mês.</div>'}</div>
@@ -319,10 +332,14 @@ function budgetRow(c, spent) {
 /* ---------- Lançamentos ---------- */
 function txRow(t) {
   const c = catById(t.category_id), a = accById(t.account_id), inc = t.kind === 'income';
-  return `<div class="item">
+  const paid = isPaid(t), late = isOverdue(t);
+  const status = paid ? (t.paid_at && t.paid_at !== t.date ? ` · ${inc ? 'recebido' : 'pago'} em ${fmtDate(t.paid_at)}` : '')
+    : ` · <b class="${late ? 'expense' : ''}">${late ? 'Atrasado' : (inc ? 'A receber' : 'A pagar')}</b>`;
+  return `<div class="item ${paid ? '' : 'pending'}">
     <span class="dot" style="background:${esc(c?.color || '#94a3b8')}"></span>
     <div class="grow"><div class="title">${esc(t.description)}</div>
-      <div class="sub">${fmtDate(t.date)} · ${esc(c?.name || 'Sem categoria')} · ${esc(a?.name || '')} · ${esc(memberName(t.user_id))}</div></div>
+      <div class="sub">${fmtDate(t.date)} · ${esc(c?.name || 'Sem categoria')} · ${esc(a?.name || '')} · ${esc(memberName(t.user_id))}${status}</div>
+      ${paid ? '' : `<button class="btn sm primary pay-btn" data-act="tx-pay" data-id="${t.id}">✓ ${inc ? 'Dar baixa (recebido)' : 'Dar baixa (pago)'}</button>`}</div>
     <div class="num ${inc ? 'income' : 'expense'}"><b>${inc ? '+' : '−'} ${brl(t.amount)}</b></div>
     <div class="row-actions">
       <button class="icon-btn" title="Editar" data-act="tx-edit" data-id="${t.id}">✏️</button>
@@ -332,7 +349,7 @@ function filteredTx() {
   const f = state.f, q = f.q.trim().toLowerCase();
   return state.tx.filter(t =>
     (f.period === 'all' || t.date.startsWith(state.month)) &&
-    (!f.kind || t.kind === f.kind) && (!f.account || t.account_id === f.account) &&
+    (!f.kind || t.kind === f.kind) && (!f.status || (f.status === 'paid' ? isPaid(t) : !isPaid(t))) && (!f.account || t.account_id === f.account) &&
     (!f.category || t.category_id === f.category || (f.category === '_' && !t.category_id)) &&
     (!f.member || t.user_id === f.member) &&
     (!q || t.description.toLowerCase().includes(q) || (catById(t.category_id)?.name || '').toLowerCase().includes(q)));
@@ -348,6 +365,7 @@ function vLanc() {
     <input class="q" data-filter="q" type="search" placeholder="Buscar…" value="${esc(f.q)}">
     <select data-filter="period">${opt('month', 'Mês selecionado', f.period === 'month')}${opt('all', 'Todo o período', f.period === 'all')}</select>
     <select data-filter="kind">${opt('', 'Todos os tipos', !f.kind)}${opt('expense', 'Despesas', f.kind === 'expense')}${opt('income', 'Receitas', f.kind === 'income')}</select>
+    <select data-filter="status">${opt('', 'Todos os status', !f.status)}${opt('pending', 'Pendentes (a pagar/receber)', f.status === 'pending')}${opt('paid', 'Pagos / recebidos', f.status === 'paid')}</select>
     <select data-filter="account">${opt('', 'Todas as contas', !f.account)}${state.accounts.map(a => opt(a.id, a.name, f.account === a.id)).join('')}</select>
     <select data-filter="category">${opt('', 'Todas as categorias', !f.category)}${opt('_', 'Sem categoria', f.category === '_')}${state.categories.map(c => opt(c.id, c.name, f.category === c.id)).join('')}</select>
     <select data-filter="member">${opt('', 'Todos os membros', !f.member)}${state.members.map(m => opt(m.user_id, m.display_name, f.member === m.user_id)).join('')}</select>
@@ -372,10 +390,11 @@ function txModal(t) {
     <label>Valor (R$)<input name="amount" inputmode="decimal" required placeholder="0,00" value="${esc(toInput(t.amount))}"></label>
     <label>Descrição<input name="description" required maxlength="120" value="${esc(t.description)}"></label>
     <div class="row2">
-      <label>Data<input type="date" name="date" required value="${t.date}"></label>
+      <label>Data / vencimento<input type="date" name="date" required value="${t.date}"></label>
       <label>Conta<select name="account_id">${state.accounts.map(a => `<option value="${a.id}" ${a.id === t.account_id ? 'selected' : ''}>${esc(a.name)}</option>`).join('')}</select></label>
     </div>
     <label>Categoria<select name="category_id"></select></label>
+    <label class="check"><input type="checkbox" name="paid" ${t.status !== 'pending' ? 'checked' : ''}><span id="paidLbl">Já foi pago</span></label>
     ${isNew ? `<div class="row2">
       <label>Repetição<select name="repeat"><option value="none">Única</option><option value="inst">Parcelado (divide o valor)</option><option value="monthly">Mensal (repete o valor)</option></select></label>
       <label>Vezes<input type="number" name="times" min="2" max="60" value="2"></label></div>` : ''}`,
@@ -383,12 +402,13 @@ function txModal(t) {
       const amount = parseBR(fd.get('amount'));
       if (!(amount > 0)) throw new Error('Informe um valor maior que zero.');
       const kind = fd.get('kind'), date = fd.get('date');
+      const paid = fd.get('paid') === 'on', tdy = today(), payDate = d => (d <= tdy ? d : tdy);
       const base = {
         household_id: state.hid, kind, description: fd.get('description').trim(), account_id: fd.get('account_id'),
         category_id: fd.get('category_id') || null,
       };
       if (!isNew) {
-        const { error } = await sb.from('transactions').update({ ...base, amount, date }).eq('id', t.id);
+        const { error } = await sb.from('transactions').update({ ...base, amount, date, status: paid ? 'paid' : 'pending', paid_at: paid ? (t.paid_at || payDate(date)) : null }).eq('id', t.id);
         if (error) throw error;
       } else {
         const rep = fd.get('repeat'), n = rep === 'none' ? 1 : Math.min(60, Math.max(2, parseInt(fd.get('times')) || 2));
@@ -400,14 +420,19 @@ function txModal(t) {
             a = i === n - 1 ? round2(amount - part * (n - 1)) : part;
             desc = `${base.description} (${i + 1}/${n})`;
           } else if (rep === 'monthly') desc = `${base.description} (${i + 1}/${n})`;
-          rows.push({ ...base, description: desc, amount: a, date: addMonths(date, i) });
+          const d = addMonths(date, i), p = paid && (i === 0 || d <= tdy);
+          rows.push({ ...base, description: desc, amount: a, date: d, status: p ? 'paid' : 'pending', paid_at: p ? payDate(d) : null });
         }
         const { error } = await sb.from('transactions').insert(rows);
         if (error) throw error;
       }
       await reload(); toast('Lançamento salvo ✔');
     });
-  const sync = (keep) => { $('[name=category_id]', f).innerHTML = catOptions($('[name=kind]:checked', f).value, keep); };
+  const sync = (keep) => {
+    const k = $('[name=kind]:checked', f).value;
+    $('[name=category_id]', f).innerHTML = catOptions(k, keep);
+    $('#paidLbl', f).textContent = k === 'income' ? 'Já foi recebido' : 'Já foi pago';
+  };
   sync(t.category_id);
   $$('[name=kind]', f).forEach(r => r.onchange = () => sync(''));
   const rep = $('[name=repeat]', f);
@@ -415,8 +440,8 @@ function txModal(t) {
 }
 function exportCsv() {
   const safe = v => { v = String(v ?? ''); if (/^[=+\-@\t\r]/.test(v)) v = "'" + v; return `"${v.replace(/"/g, '""')}"`; };
-  const head = ['Data', 'Tipo', 'Descrição', 'Categoria', 'Conta', 'Membro', 'Valor'];
-  const lines = [head, ...filteredTx().map(t => [fmtDate(t.date), t.kind === 'income' ? 'Receita' : 'Despesa', t.description,
+  const head = ['Data', 'Tipo', 'Status', 'Descrição', 'Categoria', 'Conta', 'Membro', 'Valor'];
+  const lines = [head, ...filteredTx().map(t => [fmtDate(t.date), t.kind === 'income' ? 'Receita' : 'Despesa', isPaid(t) ? 'Pago' : 'Pendente', t.description,
     catById(t.category_id)?.name || '', accById(t.account_id)?.name || '', memberName(t.user_id), String(t.amount).replace('.', ',')])]
     .map(r => r.map(safe).join(';'));
   const blob = new Blob(['﻿' + lines.join('\r\n')], { type: 'text/csv;charset=utf-8' });
@@ -588,6 +613,17 @@ function promptModal(title, label, value, onSave) {
 const ACTIONS = {
   'tx-new': () => txModal(),
   'tx-edit': id => txModal(state.tx.find(t => t.id === id)),
+  'tx-pay': id => {
+    const t = state.tx.find(x => x.id === id); if (!t) return;
+    modal(t.kind === 'income' ? 'Confirmar recebimento' : 'Dar baixa no pagamento',
+      `<p class="muted small"><b>${esc(t.description)}</b> — ${brl(t.amount)} (venc. ${fmtDate(t.date)})</p>
+       <label>${t.kind === 'income' ? 'Data do recebimento' : 'Data do pagamento'}<input type="date" name="d" required value="${today()}"></label>`,
+      async fd => {
+        const { error } = await sb.from('transactions').update({ status: 'paid', paid_at: fd.get('d') }).eq('id', id);
+        if (error) throw error;
+        await reload(); toast(t.kind === 'income' ? 'Recebimento confirmado ✔' : 'Baixa realizada ✔');
+      }, { submit: 'Confirmar' });
+  },
   'tx-del': async id => {
     if (!confirm('Excluir este lançamento?')) return;
     const { error } = await sb.from('transactions').delete().eq('id', id);

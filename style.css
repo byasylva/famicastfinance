@@ -332,3 +332,11 @@ main { padding-left: max(1rem, env(safe-area-inset-left)); padding-right: max(1r
 @media (pointer: coarse) and (max-width: 520px) { .row-actions .icon-btn { width: 36px; } }
 @media (min-width: 860px) { #nav { z-index: 15; } .topbar { z-index: 20; } }
 @media (min-width: 860px) { #nav { padding-left: .6rem; padding-right: .6rem; } }
+
+/* contas a pagar / dar baixa */
+input[type=checkbox] { -webkit-appearance: checkbox; appearance: auto; display: inline-block; width: 22px; height: 22px; min-height: 0; margin: 0; accent-color: var(--brand); flex: none; }
+label.check { display: flex; align-items: center; gap: .6rem; color: var(--text); font-size: .95rem; padding: .35rem 0 .75rem; }
+.stat .sub { font-size: .72rem; color: var(--muted); margin-top: .2rem; }
+.item.pending .num { opacity: .8; }
+.pay-btn { margin-top: .4rem; }
+@media (min-width: 760px) { .filters { grid-template-columns: 2fr repeat(6, 1fr); } }
