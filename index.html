@@ -1,0 +1,83 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>Finanças da Família</title>
+  <meta name="description" content="Controle financeiro compartilhado da família">
+  <meta name="theme-color" content="#0f766e">
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="icon" href="icon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="css/style.css">
+  <script defer src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/dist/umd/supabase.min.js"></script>
+  <script defer src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+  <script defer src="js/config.js"></script>
+  <script defer src="js/app.js"></script>
+</head>
+<body>
+
+  <!-- Login / cadastro -->
+  <section id="auth" class="screen hidden">
+    <form id="authForm" class="card auth-card" autocomplete="on">
+      <div class="logo">💰</div>
+      <h1>Finanças da Família</h1>
+      <p class="muted center" id="authSub">Entre para ver as finanças de vocês.</p>
+      <label id="nameRow" class="hidden">Seu nome
+        <input name="nome" autocomplete="name" maxlength="60">
+      </label>
+      <label>E-mail
+        <input type="email" name="email" required autocomplete="email">
+      </label>
+      <label>Senha
+        <input type="password" name="password" required minlength="6" autocomplete="current-password">
+      </label>
+      <button class="btn primary wide" id="authBtn">Entrar</button>
+      <p class="muted center small">
+        <a href="#" id="toggleAuth">Criar conta</a> · <a href="#" id="forgot">Esqueci a senha</a>
+      </p>
+      <p id="authMsg" class="msg" role="status"></p>
+    </form>
+  </section>
+
+  <!-- Criar ou entrar em uma família -->
+  <section id="onboard" class="screen hidden">
+    <div class="onboard-wrap">
+      <h1 class="center">Bem-vindo! 👋</h1>
+      <p class="muted center">Crie a família ou entre em uma já existente com o código de convite.</p>
+      <div class="grid2">
+        <form id="createForm" class="card">
+          <h2>Criar família</h2>
+          <label>Nome da família<input name="hname" required maxlength="80" placeholder="Família Silva"></label>
+          <label>Seu nome<input name="me" required maxlength="60"></label>
+          <button class="btn primary wide">Criar</button>
+        </form>
+        <form id="joinForm" class="card">
+          <h2>Entrar com convite</h2>
+          <label>Código de convite<input name="code" required maxlength="20" placeholder="ex.: a1b2c3d4"></label>
+          <label>Seu nome<input name="me" required maxlength="60"></label>
+          <button class="btn wide">Entrar</button>
+        </form>
+      </div>
+      <p class="center"><a href="#" id="obLogout">Sair da conta</a></p>
+    </div>
+  </section>
+
+  <!-- App -->
+  <div id="app" class="hidden">
+    <header class="topbar">
+      <div class="brand">💰 <span id="hhName">Família</span></div>
+      <div class="month" id="monthBar">
+        <button class="icon-btn" id="prevM" aria-label="Mês anterior">‹</button>
+        <span id="monthLabel"></span>
+        <button class="icon-btn" id="nextM" aria-label="Próximo mês">›</button>
+      </div>
+    </header>
+    <nav id="nav"></nav>
+    <main id="view"></main>
+    <button id="fab" class="fab" aria-label="Novo lançamento">＋</button>
+  </div>
+
+  <dialog id="modal"></dialog>
+  <div id="toast" role="status" aria-live="polite"></div>
+</body>
+</html>
