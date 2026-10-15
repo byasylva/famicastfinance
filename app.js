@@ -355,7 +355,7 @@ function txRow(t, o = {}) {
   const status = o.cash ? '' : paid ? (t.paid_at && t.paid_at !== t.date ? ` · ${inc ? 'recebido' : 'pago'} em ${fmtDate(t.paid_at)}` : '')
     : ` · <b class="${late ? 'expense' : ''}">${late ? 'Atrasado' : (inc ? 'A receber' : 'A pagar')}</b>`;
   const sub = [fmtDate(when), c?.name || 'Sem categoria', a?.name || '', memberName(t.user_id)].map(esc).join(' · ');
-  const btn = !paid ? `<button class="btn sm primary pay-btn" data-act="tx-pay" data-id="${t.id}">✓ Dar baixa</button>`
+  const btn = !paid ? `<button class="btn sm primary pay-btn" data-act="tx-pay" data-id="${t.id}">✓ ${inc ? 'Receber' : 'Pagar'} / abater</button>`
     : o.undo ? `<button class="btn sm ghost pay-btn" data-act="tx-unpay" data-id="${t.id}">↩ Estornar baixa</button>` : '';
   return `<div class="item ${paid ? '' : 'pending'}">
     <span class="dot" style="background:${esc(c?.color || '#94a3b8')}"></span>
@@ -726,14 +726,43 @@ const ACTIONS = {
   'tx-edit': id => txModal(state.tx.find(t => t.id === id)),
   'tx-pay': id => {
     const t = state.tx.find(x => x.id === id); if (!t) return;
-    modal(t.kind === 'income' ? 'Confirmar recebimento' : 'Dar baixa no pagamento',
-      `<p class="muted small"><b>${esc(t.description)}</b> — ${brl(t.amount)} (venc. ${fmtDate(t.date)})</p>
-       <label>${t.kind === 'income' ? 'Data do recebimento' : 'Data do pagamento'}<input type="date" name="d" required value="${today()}"></label>`,
+    const inc = t.kind === 'income', total = num(t.amount);
+    const f = modal(inc ? 'Receber ou abater' : 'Pagar ou abater',
+      `<p class="muted small"><b>${esc(t.description)}</b><br>Valor em aberto: <b>${brl(total)}</b> · venc. ${fmtDate(t.date)}</p>
+       <label>${inc ? 'Valor recebido agora (R$)' : 'Valor pago agora (R$)'}<input name="v" inputmode="decimal" required value="${esc(toInput(total))}"></label>
+       <div class="chips"><button type="button" class="btn sm" data-frac="1">Valor total</button><button type="button" class="btn sm" data-frac="0.5">Metade</button></div>
+       <p class="small" id="restLbl"></p>
+       <div class="row2"><label>${inc ? 'Data do recebimento' : 'Data do pagamento'}<input type="date" name="d" required value="${today()}"></label>
+         <label>Conta<select name="acc">${state.accounts.map(x => `<option value="${x.id}" ${x.id === t.account_id ? 'selected' : ''}>${esc(x.name)}</option>`).join('')}</select></label></div>`,
       async fd => {
-        const { error } = await sb.from('transactions').update({ status: 'paid', paid_at: fd.get('d') }).eq('id', id);
-        if (error) throw error;
-        await reload(); toast(t.kind === 'income' ? 'Recebimento confirmado ✔' : 'Baixa realizada ✔');
+        const v = parseBR(fd.get('v'));
+        if (!(v > 0)) throw new Error('Informe um valor maior que zero.');
+        if (v > total + 0.004) throw new Error(`O valor é maior que o que está em aberto (${brl(total)}).`);
+        const d = fd.get('d'), acc = fd.get('acc');
+        if (v >= total - 0.004) {                       // baixa total
+          const { error } = await sb.from('transactions').update({ status: 'paid', paid_at: d, account_id: acc }).eq('id', id);
+          if (error) throw error;
+        } else {                                        // abatimento parcial: registra o pago e mantém o restante em aberto
+          const ins = await sb.from('transactions').insert({
+            household_id: state.hid, kind: t.kind, account_id: acc, category_id: t.category_id, amount: round2(v),
+            description: (t.description + ' — abatimento').slice(0, 120), date: t.date, status: 'paid', paid_at: d,
+          }).select('id').single();
+          if (ins.error) throw ins.error;
+          const up = await sb.from('transactions').update({ amount: round2(total - v) }).eq('id', id);
+          if (up.error) { await sb.from('transactions').delete().eq('id', ins.data.id); throw up.error; }
+        }
+        await reload();
+        toast(v >= total - 0.004 ? (inc ? 'Recebimento confirmado ✔' : 'Baixa realizada ✔') : `Abatido ${brl(v)} — restam ${brl(total - v)}`);
       }, { submit: 'Confirmar' });
+    const inp = $('[name=v]', f);
+    const upd = () => {
+      const v = parseBR(inp.value), r = round2(total - (Number.isFinite(v) ? v : 0));
+      $('#restLbl', f).innerHTML = v > total + 0.004 ? '<b class="expense">Maior que o valor em aberto</b>'
+        : r > 0.004 ? `Restará em aberto: <b>${brl(r)}</b>` : '<b class="income">Quita totalmente ✔</b>';
+    };
+    inp.addEventListener('input', upd);
+    $$('[data-frac]', f).forEach(b => b.onclick = () => { inp.value = toInput(round2(total * Number(b.dataset.frac))); upd(); });
+    upd();
   },
   'tx-del': async id => {
     if (!confirm('Excluir este lançamento?')) return;

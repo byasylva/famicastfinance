@@ -359,3 +359,4 @@ label.check { display: flex; align-items: center; gap: .6rem; color: var(--text)
 @media (min-width: 860px) { #nav button.more { display: none; } }
 @media (max-width: 859px) { #nav button { font-size: .7rem; } }
 .pay-btn { white-space: nowrap; }
+.chips { display: flex; gap: .5rem; margin: -.25rem 0 .6rem; }
