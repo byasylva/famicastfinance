@@ -47,14 +47,18 @@ const sb = window.supabase.createClient(cfg.SUPABASE_URL, cfg.SUPABASE_ANON_KEY)
 /* ---------- Estado ---------- */
 const ACC_TYPES = { checking: 'Conta corrente', savings: 'Poupança', cash: 'Dinheiro', credit: 'Cartão de crédito', investment: 'Investimentos' };
 const VIEWS = {
-  painel: ['📊', 'Painel'], lancamentos: ['💸', 'Lançamentos'], orcamento: ['🎯', 'Orçamento'],
-  metas: ['🏁', 'Metas'], contas: ['🏦', 'Contas'], familia: ['👨‍👩‍👧', 'Família'],
+  painel: ['📊', 'Painel'], caixa: ['💰', 'Caixa'], pagar: ['📤', 'A pagar'], receber: ['📥', 'A receber'],
+  lancamentos: ['💸', 'Lançamentos'], orcamento: ['🎯', 'Orçamento'], metas: ['🏁', 'Metas'],
+  contas: ['🏦', 'Contas'], familia: ['👨‍👩‍👧', 'Família'], mais: ['☰', 'Mais'],
 };
+const PRIMARY = ['painel', 'caixa', 'pagar', 'receber'];
 const state = {
   user: null, hid: null, hh: null, role: null, myName: '',
   members: [], accounts: [], categories: [], goals: [], tx: [],
   month: today().slice(0, 7), view: 'painel', limit: 100,
   f: { q: '', kind: '', account: '', category: '', member: '', period: 'month', status: '' },
+  cf: { q: '', kind: '', account: '' },
+  pg: { q: '', st: 'pending', range: 'all' }, rc: { q: '', st: 'pending', range: 'all' },
 };
 let charts = [], chan = null, reloadTimer = null;
 
@@ -65,6 +69,8 @@ const monthTx = () => state.tx.filter(t => t.date.startsWith(state.month));
 const txSum = (list, kind) => sum(list.filter(t => t.kind === kind).map(t => t.amount));
 const isPaid = t => t.status !== 'pending';
 const isOverdue = t => !isPaid(t) && t.date < today();
+const cashDate = t => t.paid_at || t.date;
+const addDays = (s, n) => { const [y, m, d] = s.split('-').map(Number); return new Date(Date.UTC(y, m - 1, d + n)).toISOString().slice(0, 10); };
 const accBalance = a => {
   const own = state.tx.filter(t => t.account_id === a.id && isPaid(t));
   return num(a.initial_balance) + txSum(own, 'income') - txSum(own, 'expense');
@@ -234,51 +240,63 @@ function render() {
   if (!state.hid) return;
   $('#hhName').textContent = state.hh?.name || 'Família';
   $('#monthLabel').textContent = monthLabel(state.month);
-  $('#monthBar').style.visibility = ['metas', 'contas', 'familia'].includes(state.view) ? 'hidden' : 'visible';
-  $('#nav').innerHTML = Object.entries(VIEWS).map(([k, [ico, lbl]]) =>
-    `<button data-view="${k}" class="${k === state.view ? 'active' : ''}"><span>${ico}</span>${lbl}</button>`).join('');
+  $('#monthBar').style.visibility = ['metas', 'contas', 'familia', 'mais'].includes(state.view) ? 'hidden' : 'visible';
+  $('#nav').innerHTML = Object.entries(VIEWS).filter(([k]) => k !== 'mais').map(([k, [ico, lbl]]) =>
+    `<button data-view="${k}" class="${PRIMARY.includes(k) ? '' : 'sec'} ${k === state.view ? 'active' : ''}"><span>${ico}</span>${lbl}</button>`).join('') +
+    `<button data-view="mais" class="more ${PRIMARY.includes(state.view) ? '' : 'active'}"><span>☰</span>Mais</button>`;
   charts.forEach(c => c.destroy()); charts = [];
   const view = $('#view');
   const active = document.activeElement, keepFocus = active && view.contains(active) && active.dataset.filter ? active.dataset.filter : null;
-  view.innerHTML = { painel: vPainel, lancamentos: vLanc, orcamento: vOrc, metas: vMetas, contas: vContas, familia: vFamilia }[state.view]();
+  view.innerHTML = { painel: vPainel, caixa: vCaixa, pagar: () => vTitulos('expense'), receber: () => vTitulos('income'), lancamentos: vLanc, orcamento: vOrc, metas: vMetas, contas: vContas, familia: vFamilia, mais: vMais }[state.view]();
   if (state.view === 'painel') drawCharts();
   if (keepFocus) { const el = $(`[data-filter="${keepFocus}"]`, view); if (el) { el.focus(); try { el.setSelectionRange(el.value.length, el.value.length); } catch { } } }
 }
 
 /* ---------- Painel ---------- */
 function vPainel() {
-  const mt = monthTx(), inc = txSum(mt, 'income'), exp = txSum(mt, 'expense');
-  const total = sum(state.accounts.map(accBalance));
+  const tdy = today(), mk = state.month;
+  const paid = state.tx.filter(isPaid), pend = state.tx.filter(t => !isPaid(t));
+  const caixa = sum(state.accounts.map(accBalance));
+  const rec = txSum(pend, 'income'), pag = txSum(pend, 'expense');
+  const recLate = txSum(pend.filter(t => t.date < tdy), 'income'), pagLate = txSum(pend.filter(t => t.date < tdy), 'expense');
+  const inM = paid.filter(t => cashDate(t).startsWith(mk));
+  const ent = txSum(inM, 'income'), sai = txSum(inM, 'expense');
+  const pendM = pend.filter(t => t.date.startsWith(mk));
+  const recM = txSum(pendM, 'income'), pagM = txSum(pendM, 'expense');
+  const mt = monthTx(), exp = txSum(mt, 'expense'), hasExp = exp > 0;
   const budgets = state.categories.filter(c => c.kind === 'expense' && num(c.monthly_budget) > 0)
     .map(c => ({ c, spent: sum(mt.filter(t => t.category_id === c.id && t.kind === 'expense').map(t => t.amount)) }))
     .sort((a, b) => b.spent / b.c.monthly_budget - a.spent / a.c.monthly_budget).slice(0, 5);
-  const hasExp = exp > 0;
-  const pInc = txSum(mt.filter(isPaid), 'income'), pExp = txSum(mt.filter(isPaid), 'expense');
-  const pend = state.tx.filter(t => !isPaid(t)).sort((x, y) => x.date.localeCompare(y.date));
-  const pendingCard = pend.length ? `<div class="card" style="margin-bottom:1rem">
-    <div class="view-head" style="margin-bottom:.25rem"><h3 style="margin:0">Contas a pagar e a receber</h3>
-      <div class="small"><span class="expense">A pagar ${brl(txSum(pend, 'expense'))}</span> · <span class="income">A receber ${brl(txSum(pend, 'income'))}</span></div></div>
-    <div class="list">${pend.slice(0, 8).map(txRow).join('')}</div>
-    ${pend.length > 8 ? `<p class="center small muted">+ ${pend.length - 8} pendentes — veja em Lançamentos (filtro “Pendentes”)</p>` : ''}</div>` : '';
+  const next = kind => pend.filter(t => t.kind === kind).sort((x, y) => x.date.localeCompare(y.date)).slice(0, 5);
+  const nextCard = (kind, title, go) => { const l = next(kind); return `<div class="card">
+    <div class="view-head" style="margin-bottom:.25rem"><h3 style="margin:0">${title}</h3><a href="#${go}" data-go="${go}" class="small">Ver todas ›</a></div>
+    ${l.length ? `<div class="list">${l.map(t => txRow(t)).join('')}</div>` : '<div class="empty">Nada pendente 🎉</div>'}</div>`; };
+  const recent = paid.slice().sort((x, y) => cashDate(y).localeCompare(cashDate(x))).slice(0, 5);
+  const proj = caixa + rec - pag, res = ent - sai;
   return `
   <div class="stats">
-    <div class="card stat"><div class="label">Receitas</div><div class="value income num">${brl(inc)}</div><div class="sub">Recebido ${brl(pInc)} · A receber ${brl(inc - pInc)}</div></div>
-    <div class="card stat"><div class="label">Despesas</div><div class="value expense num">${brl(exp)}</div><div class="sub">Pago ${brl(pExp)} · A pagar ${brl(exp - pExp)}</div></div>
-    <div class="card stat"><div class="label">Resultado do mês</div><div class="value num ${inc - exp >= 0 ? 'income' : 'expense'}">${brl(inc - exp)}</div></div>
-    <div class="card stat"><div class="label">Saldo nas contas</div><div class="value num">${brl(total)}</div></div>
+    <div class="card stat"><div class="label">Saldo em caixa</div><div class="value num ${caixa < 0 ? 'expense' : ''}">${brl(caixa)}</div><div class="sub">Somente o que já foi pago/recebido</div></div>
+    <div class="card stat"><div class="label">A receber</div><div class="value income num">${brl(rec)}</div><div class="sub">${recLate > 0 ? `<b class="expense">Atrasado ${brl(recLate)}</b>` : 'Nada atrasado'}</div></div>
+    <div class="card stat"><div class="label">A pagar</div><div class="value expense num">${brl(pag)}</div><div class="sub">${pagLate > 0 ? `<b class="expense">Atrasado ${brl(pagLate)}</b>` : 'Nada atrasado'}</div></div>
+    <div class="card stat"><div class="label">Saldo projetado</div><div class="value num ${proj < 0 ? 'expense' : ''}">${brl(proj)}</div><div class="sub">Caixa + a receber − a pagar</div></div>
   </div>
-  ${pendingCard}
+  <div class="stats three">
+    <div class="card stat"><div class="label">Entradas no mês</div><div class="value income num">${brl(ent)}</div><div class="sub">A receber no mês ${brl(recM)}</div></div>
+    <div class="card stat"><div class="label">Saídas no mês</div><div class="value expense num">${brl(sai)}</div><div class="sub">A pagar no mês ${brl(pagM)}</div></div>
+    <div class="card stat"><div class="label">Resultado do mês (caixa)</div><div class="value num ${res >= 0 ? 'income' : 'expense'}">${brl(res)}</div><div class="sub">Previsto: ${brl(ent + recM - sai - pagM)}</div></div>
+  </div>
+  <div class="cols">${nextCard('expense', 'Próximas contas a pagar', 'pagar')}${nextCard('income', 'Próximos recebimentos', 'receber')}</div>
   <div class="cols">
     <div class="card"><h3>Despesas por categoria</h3>
       ${hasExp ? '<div class="chart-box"><canvas id="chCat"></canvas></div>' : '<div class="empty">Sem despesas neste mês.</div>'}</div>
-    <div class="card"><h3>Últimos 6 meses</h3><div class="chart-box"><canvas id="chMonths"></canvas></div></div>
+    <div class="card"><h3>Entradas × saídas (6 meses)</h3><div class="chart-box"><canvas id="chMonths"></canvas></div></div>
   </div>
   <div class="cols">
     <div class="card"><h3>Orçamento do mês</h3>
       ${budgets.length ? budgets.map(({ c, spent }) => budgetRow(c, spent)).join('') :
-      '<div class="empty">Defina orçamentos na aba <b>Orçamento</b> para acompanhar aqui.</div>'}</div>
-    <div class="card"><h3>Últimos lançamentos</h3>
-      ${mt.length ? `<div class="list">${mt.slice(0, 6).map(txRow).join('')}</div>` : '<div class="empty">Nenhum lançamento neste mês. Use o botão ＋.</div>'}</div>
+      '<div class="empty">Defina orçamentos na aba <b>Orçamento</b> (menu Mais) para acompanhar aqui.</div>'}</div>
+    <div class="card"><div class="view-head" style="margin-bottom:.25rem"><h3 style="margin:0">Últimas movimentações</h3><a href="#caixa" data-go="caixa" class="small">Ver caixa ›</a></div>
+      ${recent.length ? `<div class="list">${recent.map(t => txRow(t, { cash: true })).join('')}</div>` : '<div class="empty">Nenhuma movimentação ainda. Use o botão ＋.</div>'}</div>
   </div>`;
 }
 function drawCharts() {
@@ -330,16 +348,20 @@ function budgetRow(c, spent) {
 }
 
 /* ---------- Lançamentos ---------- */
-function txRow(t) {
+function txRow(t, o = {}) {
   const c = catById(t.category_id), a = accById(t.account_id), inc = t.kind === 'income';
   const paid = isPaid(t), late = isOverdue(t);
-  const status = paid ? (t.paid_at && t.paid_at !== t.date ? ` · ${inc ? 'recebido' : 'pago'} em ${fmtDate(t.paid_at)}` : '')
+  const when = o.cash ? cashDate(t) : t.date;
+  const status = o.cash ? '' : paid ? (t.paid_at && t.paid_at !== t.date ? ` · ${inc ? 'recebido' : 'pago'} em ${fmtDate(t.paid_at)}` : '')
     : ` · <b class="${late ? 'expense' : ''}">${late ? 'Atrasado' : (inc ? 'A receber' : 'A pagar')}</b>`;
+  const sub = [fmtDate(when), c?.name || 'Sem categoria', a?.name || '', memberName(t.user_id)].map(esc).join(' · ');
+  const btn = !paid ? `<button class="btn sm primary pay-btn" data-act="tx-pay" data-id="${t.id}">✓ Dar baixa</button>`
+    : o.undo ? `<button class="btn sm ghost pay-btn" data-act="tx-unpay" data-id="${t.id}">↩ Estornar baixa</button>` : '';
   return `<div class="item ${paid ? '' : 'pending'}">
     <span class="dot" style="background:${esc(c?.color || '#94a3b8')}"></span>
     <div class="grow"><div class="title">${esc(t.description)}</div>
-      <div class="sub">${fmtDate(t.date)} · ${esc(c?.name || 'Sem categoria')} · ${esc(a?.name || '')} · ${esc(memberName(t.user_id))}${status}</div>
-      ${paid ? '' : `<button class="btn sm primary pay-btn" data-act="tx-pay" data-id="${t.id}">✓ ${inc ? 'Dar baixa (recebido)' : 'Dar baixa (pago)'}</button>`}</div>
+      <div class="sub">${sub}${status}</div>
+      ${o.bal !== undefined ? `<div class="sub num">Saldo: ${brl(o.bal)}</div>` : ''}${btn}</div>
     <div class="num ${inc ? 'income' : 'expense'}"><b>${inc ? '+' : '−'} ${brl(t.amount)}</b></div>
     <div class="row-actions">
       <button class="icon-btn" title="Editar" data-act="tx-edit" data-id="${t.id}">✏️</button>
@@ -354,6 +376,85 @@ function filteredTx() {
     (!f.member || t.user_id === f.member) &&
     (!q || t.description.toLowerCase().includes(q) || (catById(t.category_id)?.name || '').toLowerCase().includes(q)));
 }
+/* ---------- Caixa (extrato de entradas e saídas realizadas) ---------- */
+function vCaixa() {
+  const f = state.cf, mk = state.month, first = mk + '-01';
+  const accs = f.account ? state.accounts.filter(x => x.id === f.account) : state.accounts;
+  const ids = new Set(accs.map(x => x.id));
+  const paid = state.tx.filter(t => isPaid(t) && ids.has(t.account_id));
+  const open = sum(accs.map(x => x.initial_balance)) + txSum(paid.filter(t => cashDate(t) < first), 'income') - txSum(paid.filter(t => cashDate(t) < first), 'expense');
+  const inM = paid.filter(t => cashDate(t).startsWith(mk)).sort((x, y) => cashDate(x).localeCompare(cashDate(y)) || String(x.created_at).localeCompare(String(y.created_at)));
+  let run = open; const bal = new Map();
+  for (const t of inM) { run += t.kind === 'income' ? num(t.amount) : -num(t.amount); bal.set(t.id, round2(run)); }
+  const ent = txSum(inM, 'income'), sai = txSum(inM, 'expense'), q = f.q.trim().toLowerCase();
+  const list = inM.filter(t => (!f.kind || t.kind === f.kind) && (!q || t.description.toLowerCase().includes(q) || (catById(t.category_id)?.name || '').toLowerCase().includes(q))).reverse();
+  const opt = (v, l, sel) => `<option value="${esc(v)}" ${sel ? 'selected' : ''}>${esc(l)}</option>`;
+  return `
+  <div class="view-head"><h2>Caixa</h2>
+    <div><button class="btn sm" data-act="cx-in">＋ Entrada</button> <button class="btn sm primary" data-act="cx-out">＋ Saída</button></div></div>
+  <div class="stats">
+    <div class="card stat"><div class="label">Saldo inicial</div><div class="value num">${brl(open)}</div></div>
+    <div class="card stat"><div class="label">Entradas</div><div class="value income num">${brl(ent)}</div></div>
+    <div class="card stat"><div class="label">Saídas</div><div class="value expense num">${brl(sai)}</div></div>
+    <div class="card stat"><div class="label">Saldo final</div><div class="value num ${run < 0 ? 'expense' : ''}">${brl(run)}</div></div>
+  </div>
+  <div class="filters filters3">
+    <input class="q" data-scope="cf" data-filter="q" type="search" placeholder="Buscar…" value="${esc(f.q)}">
+    <select data-scope="cf" data-filter="kind">${opt('', 'Entradas e saídas', !f.kind)}${opt('income', 'Só entradas', f.kind === 'income')}${opt('expense', 'Só saídas', f.kind === 'expense')}</select>
+    <select data-scope="cf" data-filter="account">${opt('', 'Todas as contas', !f.account)}${state.accounts.map(x => opt(x.id, x.name, f.account === x.id)).join('')}</select>
+  </div>
+  <div class="card">
+    <div class="small muted" style="margin-bottom:.4rem">Movimentações pela <b>data do pagamento/recebimento</b>. O que está pendente não entra no caixa.</div>
+    ${list.length ? `<div class="list">${list.map(t => txRow(t, { cash: true, bal: bal.get(t.id), undo: true })).join('')}</div>` : '<div class="empty">Nenhuma movimentação no caixa neste mês.</div>'}
+  </div>`;
+}
+
+/* ---------- A pagar / A receber ---------- */
+function vTitulos(kind) {
+  const isE = kind === 'expense', sc = isE ? 'pg' : 'rc', f = state[sc], tdy = today(), mk = state.month;
+  const all = state.tx.filter(t => t.kind === kind), pend = all.filter(t => !isPaid(t));
+  const late = pend.filter(t => t.date < tdy), soon = pend.filter(t => t.date >= tdy && t.date <= addDays(tdy, 7));
+  const doneM = all.filter(t => isPaid(t) && cashDate(t).startsWith(mk));
+  const q = f.q.trim().toLowerCase();
+  let list;
+  if (f.st === 'pending') {
+    list = pend.filter(t => ({
+      all: true, late: t.date < tdy, today: t.date === tdy, week: t.date >= tdy && t.date <= addDays(tdy, 7), month: t.date.startsWith(mk),
+    }[f.range])).sort((x, y) => x.date.localeCompare(y.date));
+  } else list = doneM.slice().sort((x, y) => cashDate(y).localeCompare(cashDate(x)));
+  list = list.filter(t => !q || t.description.toLowerCase().includes(q) || (catById(t.category_id)?.name || '').toLowerCase().includes(q));
+  const opt = (v, l) => `<option value="${v}" ${f.range === v ? 'selected' : ''}>${l}</option>`;
+  const cls = isE ? 'expense' : 'income', words = isE ? ['a pagar', 'Pagas', 'Pago'] : ['a receber', 'Recebidas', 'Recebido'];
+  return `
+  <div class="view-head"><h2>Contas ${words[0]}</h2><button class="btn sm primary" data-act="${isE ? 'new-pay' : 'new-rec'}">＋ Nova conta ${words[0]}</button></div>
+  <div class="stats">
+    <div class="card stat"><div class="label">Total ${words[0]}</div><div class="value ${cls} num">${brl(txSum(pend, kind))}</div><div class="sub">${pend.length} pendente(s)</div></div>
+    <div class="card stat"><div class="label">Atrasadas</div><div class="value ${late.length ? 'expense' : ''} num">${brl(txSum(late, kind))}</div><div class="sub">${late.length} conta(s)</div></div>
+    <div class="card stat"><div class="label">Próximos 7 dias</div><div class="value num">${brl(txSum(soon, kind))}</div><div class="sub">${soon.length} conta(s)</div></div>
+    <div class="card stat"><div class="label">${words[2]} no mês</div><div class="value num">${brl(txSum(doneM, kind))}</div><div class="sub">${doneM.length} conta(s)</div></div>
+  </div>
+  <div class="tabs">
+    <button class="btn sm ${f.st === 'pending' ? 'primary' : ''}" data-act="set-st" data-scope="${sc}" data-val="pending">Pendentes</button>
+    <button class="btn sm ${f.st === 'paid' ? 'primary' : ''}" data-act="set-st" data-scope="${sc}" data-val="paid">${words[1]} no mês</button>
+  </div>
+  <div class="filters filters3">
+    <input class="q" data-scope="${sc}" data-filter="q" type="search" placeholder="Buscar…" value="${esc(f.q)}">
+    ${f.st === 'pending' ? `<select data-scope="${sc}" data-filter="range">${opt('all', 'Todas pendentes')}${opt('late', 'Atrasadas')}${opt('today', 'Vencem hoje')}${opt('week', 'Próximos 7 dias')}${opt('month', 'Vencem no mês selecionado')}</select>` : ''}
+  </div>
+  <div class="card">
+    ${list.length ? `<div class="list">${list.map(t => txRow(t, { undo: f.st === 'paid' })).join('')}</div>` :
+      `<div class="empty">${f.st === 'pending' ? 'Nenhuma conta pendente neste filtro 🎉' : 'Nada baixado neste mês.'}</div>`}
+  </div>`;
+}
+
+/* ---------- Menu "Mais" (celular) ---------- */
+function vMais() {
+  const item = (k, desc) => `<button class="menu-item" data-go="${k}"><span class="mi">${VIEWS[k][0]}</span><span><b>${VIEWS[k][1]}</b><br><span class="small muted">${desc}</span></span><span class="muted">›</span></button>`;
+  return `<div class="view-head"><h2>Mais</h2></div><div class="card stack-sm">
+    ${item('lancamentos', 'Todos os lançamentos, busca e exportar CSV')}${item('orcamento', 'Categorias e orçamento mensal')}
+    ${item('metas', 'Metas de economia')}${item('contas', 'Contas bancárias e saldos')}${item('familia', 'Membros, convite e minha conta')}</div>`;
+}
+
 function vLanc() {
   const f = state.f, list = filteredTx();
   const inc = txSum(list, 'income'), exp = txSum(list, 'expense');
@@ -380,11 +481,11 @@ function catOptions(kind, sel) {
   return `<option value="">Sem categoria</option>` + state.categories.filter(c => c.kind === kind)
     .map(c => `<option value="${c.id}" ${c.id === sel ? 'selected' : ''}>${esc(c.name)}</option>`).join('');
 }
-function txModal(t) {
+function txModal(t, preset = {}) {
   if (!state.accounts.length) return toast('Crie uma conta antes de lançar.', 'error');
   const isNew = !t;
-  t = t || { kind: 'expense', date: today(), amount: '', description: '', account_id: state.accounts[0].id, category_id: '' };
-  const f = modal(isNew ? 'Novo lançamento' : 'Editar lançamento', `
+  t = t || { kind: preset.kind || 'expense', status: preset.paid === false ? 'pending' : 'paid', date: today(), amount: '', description: '', account_id: state.accounts[0].id, category_id: '' };
+  const f = modal(!isNew ? 'Editar lançamento' : preset.paid === false ? (t.kind === 'income' ? 'Nova conta a receber' : 'Nova conta a pagar') : (t.kind === 'income' ? 'Nova entrada' : 'Novo lançamento'), `
     <div class="seg exp"><label><input type="radio" name="kind" value="expense" ${t.kind === 'expense' ? 'checked' : ''}><span>Despesa</span></label>
       <label><input type="radio" name="kind" value="income" ${t.kind === 'income' ? 'checked' : ''}><span>Receita</span></label></div>
     <label>Valor (R$)<input name="amount" inputmode="decimal" required placeholder="0,00" value="${esc(toInput(t.amount))}"></label>
@@ -612,6 +713,16 @@ function promptModal(title, label, value, onSave) {
 /* ---------- Ações (delegação de eventos) ---------- */
 const ACTIONS = {
   'tx-new': () => txModal(),
+  'cx-in': () => txModal(null, { kind: 'income', paid: true }),
+  'cx-out': () => txModal(null, { kind: 'expense', paid: true }),
+  'new-pay': () => txModal(null, { kind: 'expense', paid: false }),
+  'new-rec': () => txModal(null, { kind: 'income', paid: false }),
+  'set-st': (id, el) => { state[el.dataset.scope].st = el.dataset.val; render(); },
+  'tx-unpay': async id => {
+    if (!confirm('Estornar a baixa? O lançamento volta para pendente e sai do caixa.')) return;
+    const { error } = await sb.from('transactions').update({ status: 'pending', paid_at: null }).eq('id', id);
+    error ? toast(error.message, 'error') : (await reload(), toast('Baixa estornada'));
+  },
   'tx-edit': id => txModal(state.tx.find(t => t.id === id)),
   'tx-pay': id => {
     const t = state.tx.find(x => x.id === id); if (!t) return;
@@ -681,17 +792,19 @@ const ACTIONS = {
 
 function initApp() {
   $('#view').addEventListener('click', e => {
+    const go = e.target.closest('[data-go]');
+    if (go) { e.preventDefault(); return setView(go.dataset.go); }
     const el = e.target.closest('[data-act]'); if (!el) return;
-    const fn = ACTIONS[el.dataset.act]; fn && fn(el.dataset.id);
+    const fn = ACTIONS[el.dataset.act]; fn && fn(el.dataset.id, el);
   });
   const onFilter = e => {
     const k = e.target.dataset.filter; if (!k) return;
-    state.f[k] = e.target.value; state.limit = 100; render();
+    state[e.target.dataset.scope || 'f'][k] = e.target.value; state.limit = 100; render();
   };
   $('#view').addEventListener('input', e => e.target.matches('input[data-filter]') && onFilter(e));
   $('#view').addEventListener('change', e => e.target.matches('select[data-filter]') && onFilter(e));
   $('#nav').addEventListener('click', e => { const b = e.target.closest('[data-view]'); if (b) setView(b.dataset.view); });
-  $('#fab').onclick = () => txModal();
+  $('#fab').onclick = () => txModal(null, { pagar: { kind: 'expense', paid: false }, receber: { kind: 'income', paid: false } }[state.view] || {});
   $('#prevM').onclick = () => { state.month = addMonths(state.month + '-01', -1).slice(0, 7); render(); };
   $('#nextM').onclick = () => { state.month = addMonths(state.month + '-01', 1).slice(0, 7); render(); };
   window.addEventListener('hashchange', () => { const v = location.hash.slice(1); if (VIEWS[v] && v !== state.view && state.hid) setView(v); });

@@ -340,3 +340,22 @@ label.check { display: flex; align-items: center; gap: .6rem; color: var(--text)
 .item.pending .num { opacity: .8; }
 .pay-btn { margin-top: .4rem; }
 @media (min-width: 760px) { .filters { grid-template-columns: 2fr repeat(6, 1fr); } }
+
+/* caixa / a pagar / a receber / menu mais */
+.stats.three { grid-template-columns: repeat(2, 1fr); }
+.stats.three .card:last-child { grid-column: 1 / -1; }
+@media (min-width: 700px) { .stats.three { grid-template-columns: repeat(3, 1fr); } .stats.three .card:last-child { grid-column: auto; } }
+.filters3 { grid-template-columns: 1fr; }
+@media (min-width: 600px) { .filters3 { grid-template-columns: 2fr 1fr 1fr; } }
+.tabs { display: flex; gap: .5rem; margin-bottom: .75rem; }
+.tabs .btn { flex: 1; }
+@media (min-width: 600px) { .tabs .btn { flex: none; min-width: 150px; } }
+.menu-item { display: flex; align-items: center; gap: .9rem; width: 100%; text-align: left; font: inherit; color: var(--text); background: none; border: 0; border-bottom: 1px solid var(--line); padding: .9rem .25rem; cursor: pointer; min-height: 56px; }
+.menu-item:last-child { border-bottom: 0; }
+.menu-item > span:nth-child(2) { flex: 1; }
+.menu-item .mi { font-size: 1.5rem; }
+/* menu inferior: 4 principais + Mais; no PC todos aparecem na lateral */
+@media (max-width: 859px) { #nav button.sec { display: none; } }
+@media (min-width: 860px) { #nav button.more { display: none; } }
+@media (max-width: 859px) { #nav button { font-size: .7rem; } }
+.pay-btn { white-space: nowrap; }
