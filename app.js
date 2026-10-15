@@ -286,7 +286,7 @@ function drawCharts() {
     },
     options: {
       maintainAspectRatio: false, cutout: '62%',
-      plugins: { legend: { position: 'right', labels: { boxWidth: 10 } }, tooltip: { callbacks: { label: x => ` ${x.label}: ${brl(x.parsed)}` } } },
+      plugins: { legend: { position: window.innerWidth < 520 ? 'bottom' : 'right', labels: { boxWidth: 10 } }, tooltip: { callbacks: { label: x => ` ${x.label}: ${brl(x.parsed)}` } } },
     },
   }));
   const keys = [...Array(6)].map((_, i) => addMonths(state.month + '-01', i - 5).slice(0, 7));
@@ -660,6 +660,11 @@ function initApp() {
   $('#nextM').onclick = () => { state.month = addMonths(state.month + '-01', 1).slice(0, 7); render(); };
   window.addEventListener('hashchange', () => { const v = location.hash.slice(1); if (VIEWS[v] && v !== state.view && state.hid) setView(v); });
   if (VIEWS[location.hash.slice(1)]) state.view = location.hash.slice(1);
+  let narrow = window.innerWidth < 520, rt;
+  window.addEventListener('resize', () => {
+    clearTimeout(rt);
+    rt = setTimeout(() => { const n = window.innerWidth < 520; if (n !== narrow) { narrow = n; if (state.hid && state.view === 'painel') render(); } }, 200);
+  });
 }
 
 /* ---------- Boot ---------- */
