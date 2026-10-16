@@ -360,3 +360,38 @@ label.check { display: flex; align-items: center; gap: .6rem; color: var(--text)
 @media (max-width: 859px) { #nav button { font-size: .7rem; } }
 .pay-btn { white-space: nowrap; }
 .chips { display: flex; gap: .5rem; margin: -.25rem 0 .6rem; }
+
+/* ===== foto de perfil, menu da conta, perfis, offline ===== */
+.av { display: inline-block; border-radius: 50%; object-fit: cover; flex: none; vertical-align: middle; }
+.av.ini { display: inline-grid; place-items: center; color: #fff; font-weight: 700; line-height: 1; }
+.avatar-btn { border: 2px solid var(--line); background: none; padding: 0; border-radius: 50%; width: 40px; height: 40px; cursor: pointer; flex: none; display: grid; place-items: center; overflow: hidden; }
+.avatar-btn:hover, .avatar-btn:focus-visible { border-color: var(--brand); }
+.topbar { gap: .6rem; }
+.brand { flex: 1; min-width: 0; }
+.month span { min-width: 8.5em; }
+@media (max-width: 420px) { .month span { min-width: 7.2em; font-size: .9rem; } .month .icon-btn { width: 32px; } }
+.usermenu {
+  position: fixed; z-index: 60; right: max(.75rem, env(safe-area-inset-right)); top: calc(env(safe-area-inset-top) + 54px);
+  width: min(300px, calc(100vw - 1.5rem)); background: var(--card); border: 1px solid var(--line); border-radius: var(--radius);
+  box-shadow: 0 12px 40px rgba(0,0,0,.28); padding: .5rem; display: grid; gap: .15rem;
+}
+.um-head { display: flex; align-items: center; gap: .75rem; padding: .6rem .6rem .8rem; border-bottom: 1px solid var(--line); margin-bottom: .25rem; }
+.um-head b { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.um-item { text-align: left; font: inherit; color: var(--text); background: none; border: 0; border-radius: 10px; padding: .75rem .7rem; cursor: pointer; min-height: 44px; }
+.um-item:hover { background: var(--bg); }
+.um-item.out { color: var(--expense); font-weight: 600; margin-top: .15rem; border-top: 1px solid var(--line); border-radius: 0 0 10px 10px; }
+.netbar { display: flex; gap: .5rem; align-items: flex-start; background: #fef3c7; color: #78350f; border: 1px solid #fcd34d; border-radius: 12px; padding: .65rem .8rem; margin-bottom: .9rem; font-size: .85rem; }
+.netbar.off { background: #fee2e2; color: #7f1d1d; border-color: #fca5a5; }
+@media (prefers-color-scheme: dark) { .netbar { background: #422006; color: #fde68a; border-color: #854d0e; } .netbar.off { background: #450a0a; color: #fecaca; border-color: #991b1b; } }
+.pgrid { display: grid; gap: .9rem; grid-template-columns: repeat(auto-fill, minmax(min(100%, 240px), 1fr)); }
+.pcard { padding: 0; overflow: hidden; }
+.pcover { aspect-ratio: 4 / 3; background: var(--brand-soft); display: grid; place-items: center; font-size: 3.2rem; overflow: hidden; }
+.pcover img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.pbody { padding: .8rem .9rem .9rem; }
+.pstat { display: grid; grid-template-columns: 1fr 1fr; gap: .5rem; margin: .6rem 0; }
+.photo-pick { display: flex; align-items: center; gap: .9rem; margin-bottom: .9rem; }
+.pp-prev { width: 84px; height: 84px; border-radius: 16px; background: var(--brand-soft); display: grid; place-items: center; font-size: 2.2rem; overflow: hidden; flex: none; }
+.pp-prev img { width: 100%; height: 100%; object-fit: cover; }
+.pp-btns { display: grid; gap: .4rem; }
+.item > .av { align-self: center; }
+@media (max-width: 599px) { .pcover { aspect-ratio: 16 / 9; font-size: 2.6rem; } }

@@ -17,6 +17,48 @@ function parseBR(s) {
   const n = parseFloat(s);
   return Number.isFinite(n) ? n : NaN;
 }
+const uuid = () => (crypto.randomUUID ? crypto.randomUUID() : 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, c => { const r = Math.random() * 16 | 0; return (c === 'x' ? r : (r & 3 | 8)).toString(16); }));
+const isNetErr = e => !navigator.onLine || /failed to fetch|networkerror|network request failed|load failed|fetch failed/i.test(String(e?.message || e));
+const safeImg = s => (typeof s === 'string' && s.length < 600000 && /^data:image\/(jpeg|png|webp);base64,[A-Za-z0-9+/=]+$/.test(s)) ? s : '';
+const initials = n => String(n || '?').trim().split(/\s+/).slice(0, 2).map(p => p[0]).join('').toUpperCase() || '?';
+const hue = n => { let h = 0; for (const c of String(n)) h = (h * 31 + c.charCodeAt(0)) % 360; return h; };
+function avatar(src, name, size = 36) {
+  const s = safeImg(src);
+  return s ? `<img class="av" src="${s}" alt="" style="width:${size}px;height:${size}px">`
+    : `<span class="av ini" style="width:${size}px;height:${size}px;font-size:${Math.round(size * .4)}px;background:hsl(${hue(name)} 55% 42%)">${esc(initials(name))}</span>`;
+}
+/* escolhe uma foto (câmera/galeria), recorta e reduz; devolve data URL JPEG */
+function pickImage(maxPx = 480, square = false) {
+  return new Promise((resolve, reject) => {
+    const inp = document.createElement('input'); inp.type = 'file'; inp.accept = 'image/*';
+    inp.onchange = () => {
+      const file = inp.files && inp.files[0]; if (!file) return resolve(null);
+      const url = URL.createObjectURL(file), img = new Image();
+      img.onload = () => {
+        let sw = img.width, sh = img.height, sx = 0, sy = 0;
+        if (square) { const m = Math.min(sw, sh); sx = (sw - m) / 2; sy = (sh - m) / 2; sw = sh = m; }
+        const k = Math.min(1, maxPx / Math.max(sw, sh)), c = document.createElement('canvas');
+        c.width = Math.max(1, Math.round(sw * k)); c.height = Math.max(1, Math.round(sh * k));
+        c.getContext('2d').drawImage(img, sx, sy, sw, sh, 0, 0, c.width, c.height);
+        URL.revokeObjectURL(url);
+        let q = .82, out = c.toDataURL('image/jpeg', q);
+        while (out.length > 300000 && q > .4) { q -= .1; out = c.toDataURL('image/jpeg', q); }
+        resolve(out);
+      };
+      img.onerror = () => { URL.revokeObjectURL(url); reject(new Error('Não foi possível ler essa imagem.')); };
+      img.src = url;
+    };
+    inp.click();
+  });
+}
+const sqlHint = e => /avatar|family_items|item_id|schema cache|does not exist/i.test(String(e?.message)) ? new Error('Falta rodar o SQL “migracao_perfis_offline.sql” no Supabase (SQL Editor → Run).') : e;
+/* armazenamento local (IndexedDB) para uso offline */
+const idb = {
+  db: null,
+  open() { return this.db || (this.db = new Promise((res, rej) => { const r = indexedDB.open('fin-familia', 1); r.onupgradeneeded = () => r.result.createObjectStore('kv'); r.onsuccess = () => res(r.result); r.onerror = () => rej(r.error); })); },
+  async get(k) { try { const db = await this.open(); return await new Promise((res, rej) => { const q = db.transaction('kv').objectStore('kv').get(k); q.onsuccess = () => res(q.result); q.onerror = () => rej(q.error); }); } catch { return undefined; } },
+  async set(k, v) { try { const db = await this.open(); await new Promise((res, rej) => { const t = db.transaction('kv', 'readwrite'); t.objectStore('kv').put(v, k); t.oncomplete = res; t.onerror = () => rej(t.error); }); } catch { } },
+};
 const toInput = n => (n === '' || n == null ? '' : String(n).replace('.', ','));
 const today = () => { const d = new Date(); return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`; };
 const fmtDate = d => d ? d.split('-').reverse().join('/') : '';
@@ -49,18 +91,20 @@ const ACC_TYPES = { checking: 'Conta corrente', savings: 'Poupança', cash: 'Din
 const VIEWS = {
   painel: ['📊', 'Painel'], caixa: ['💰', 'Caixa'], pagar: ['📤', 'A pagar'], receber: ['📥', 'A receber'],
   lancamentos: ['💸', 'Lançamentos'], orcamento: ['🎯', 'Orçamento'], metas: ['🏁', 'Metas'],
-  contas: ['🏦', 'Contas'], familia: ['👨‍👩‍👧', 'Família'], mais: ['☰', 'Mais'],
+  contas: ['🏦', 'Contas'], perfis: ['👨‍👧‍👦', 'Perfis'], familia: ['👨‍👩‍👧', 'Família'], mais: ['☰', 'Mais'],
 };
+const KINDS = { child: ['👶', 'Filho(a)'], person: ['🧑', 'Pessoa / dependente'], vehicle: ['🚗', 'Veículo'], pet: ['🐶', 'Pet'], other: ['📦', 'Outro'] };
 const PRIMARY = ['painel', 'caixa', 'pagar', 'receber'];
 const state = {
   user: null, hid: null, hh: null, role: null, myName: '',
   members: [], accounts: [], categories: [], goals: [], tx: [],
   month: today().slice(0, 7), view: 'painel', limit: 100,
-  f: { q: '', kind: '', account: '', category: '', member: '', period: 'month', status: '' },
+  f: { q: '', kind: '', account: '', category: '', member: '', period: 'month', status: '', item: '' },
+  items: [], itemsOk: true, queue: [], snapTs: 0,
   cf: { q: '', kind: '', account: '' },
   pg: { q: '', st: 'pending', range: 'all' }, rc: { q: '', st: 'pending', range: 'all' },
 };
-let charts = [], chan = null, reloadTimer = null;
+let charts = [], chan = null, chan2 = null, reloadTimer = null;
 
 const catById = id => state.categories.find(c => c.id === id);
 const accById = id => state.accounts.find(a => a.id === id);
@@ -77,7 +121,7 @@ const accBalance = a => {
 };
 
 /* ---------- Modal ---------- */
-function modal(title, body, onSubmit, { submit = 'Salvar' } = {}) {
+function modal(title, body, onSubmit, { submit = 'Salvar', offlineOk = false } = {}) {
   const m = $('#modal');
   m.innerHTML = `<form class="modal-form"><h3>${esc(title)}</h3>${body}
     <div class="actions"><button type="button" class="btn ghost" data-close>Cancelar</button>
@@ -87,7 +131,10 @@ function modal(title, body, onSubmit, { submit = 'Salvar' } = {}) {
   f.onsubmit = async e => {
     e.preventDefault();
     const btn = $('.primary', f); btn.disabled = true;
-    try { await onSubmit(new FormData(f), f); m.close(); }
+    try {
+      if (!navigator.onLine && !offlineOk) throw new Error('Sem internet: conecte-se para salvar esta alteração.');
+      await onSubmit(new FormData(f), f); m.close();
+    }
     catch (err) { toast(err.message || String(err), 'error'); btn.disabled = false; }
   };
   m.showModal();
@@ -107,20 +154,84 @@ async function fetchAllTx() {
     from += 1000;
   }
 }
+function withQueued(tx) {
+  const mine = state.queue.filter(e => e.uid === state.user?.id).flatMap(e => e.rows);
+  const ids = new Set(tx.map(t => t.id));
+  return [...mine.filter(r => !ids.has(r.id)).map(r => ({ ...r, _pending: true })), ...tx];
+}
+function saveSnapshot() {
+  idb.set('snapshot', {
+    uid: state.user.id, hid: state.hid, role: state.role, myName: state.myName, hh: state.hh, members: state.members,
+    accounts: state.accounts, categories: state.categories, goals: state.goals, items: state.items, itemsOk: state.itemsOk,
+    tx: state.tx.filter(t => !t._pending), ts: Date.now(),
+  });
+}
+async function loadSnapshot() {
+  const s = await idb.get('snapshot');
+  if (!s || s.uid !== state.user?.id || s.hid !== state.hid) return false;
+  Object.assign(state, { hh: s.hh, members: s.members, accounts: s.accounts, categories: s.categories, goals: s.goals, items: s.items || [], itemsOk: s.itemsOk !== false, snapTs: s.ts });
+  state.tx = withQueued(s.tx);
+  return true;
+}
 async function reload() {
   try {
     const q = t => sb.from(t).select('*').eq('household_id', state.hid);
-    const [acc, cat, goal, mem, hh, tx] = await Promise.all([
+    const [acc, cat, goal, mem, hh, tx, itm] = await Promise.all([
       q('accounts').order('created_at'), q('categories').order('name'), q('goals').order('created_at'),
       q('household_members').order('joined_at'),
       sb.from('households').select('name,invite_code').eq('id', state.hid).single(),
       fetchAllTx(),
+      q('family_items').order('created_at').then(r => r, e => ({ error: e })),
     ]);
     for (const r of [acc, cat, goal, mem, hh]) if (r.error) throw r.error;
     state.accounts = acc.data; state.categories = cat.data; state.goals = goal.data;
-    state.members = mem.data; state.hh = hh.data; state.tx = tx;
-    render();
-  } catch (e) { toast('Erro ao carregar: ' + (e.message || e), 'error'); }
+    state.members = mem.data; state.hh = hh.data;
+    state.itemsOk = !itm.error; state.items = itm.error ? [] : itm.data;
+    state.tx = withQueued(tx); state.snapTs = 0;
+    saveSnapshot(); render();
+  } catch (e) {
+    if (isNetErr(e) && await loadSnapshot()) return render();
+    toast('Erro ao carregar: ' + (e.message || e), 'error');
+  }
+}
+const persistQueue = () => idb.set('queue', state.queue);
+let flushing = false;
+async function flushQueue() {
+  if (flushing || !navigator.onLine || !state.user || !state.hid) return;
+  const mine = state.queue.filter(e => e.uid === state.user.id && e.hid === state.hid);
+  if (!mine.length) return;
+  flushing = true; let sent = 0;
+  try {
+    for (const e of mine) {
+      const { error } = await sb.from('transactions').upsert(e.rows, { onConflict: 'id' });
+      if (error) {
+        if (isNetErr(error)) break;
+        toast('Um lançamento salvo offline foi recusado: ' + error.message, 'error');
+      } else sent += e.rows.length;
+      state.queue = state.queue.filter(x => x !== e); await persistQueue();
+    }
+  } finally { flushing = false; }
+  if (sent) toast(`✔ ${sent} lançamento(s) enviado(s)`);
+  await reload();
+}
+/* grava lançamentos; sem internet, guarda no aparelho e envia depois. Devolve true se ficou na fila */
+async function insertTx(rows) {
+  rows = rows.map(r => ({ ...r, id: r.id || uuid(), user_id: state.user.id }));
+  if (navigator.onLine) {
+    const { error } = await sb.from('transactions').insert(rows);
+    if (!error) return false;
+    if (!isNetErr(error)) throw sqlHint(error);
+  }
+  state.queue.push({ uid: state.user.id, hid: state.hid, rows }); await persistQueue();
+  return true;
+}
+function netBarHtml() {
+  const pend = state.queue.filter(e => e.uid === state.user?.id).reduce((n, e) => n + e.rows.length, 0);
+  if (!navigator.onLine) {
+    const when = state.snapTs ? ' (de ' + new Date(state.snapTs).toLocaleString('pt-BR', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' }) + ')' : '';
+    return `<div class="netbar off">📴 <span><b>Sem conexão.</b> Você está vendo os dados salvos neste aparelho${when}. Novos lançamentos ficam guardados e são enviados quando a internet voltar${pend ? ` — ${pend} aguardando envio` : ''}.</span></div>`;
+  }
+  return pend ? `<div class="netbar">⏳ ${pend} lançamento(s) aguardando envio…</div>` : '';
 }
 function scheduleReload() { clearTimeout(reloadTimer); reloadTimer = setTimeout(reload, 400); }
 function subscribe() {
@@ -129,6 +240,10 @@ function subscribe() {
   for (const table of ['accounts', 'categories', 'transactions', 'goals', 'household_members'])
     chan.on('postgres_changes', { event: '*', schema: 'public', table, filter: `household_id=eq.${state.hid}` }, scheduleReload);
   chan.subscribe();
+  if (chan2) sb.removeChannel(chan2);
+  chan2 = sb.channel('hi-' + state.hid)
+    .on('postgres_changes', { event: '*', schema: 'public', table: 'family_items', filter: `household_id=eq.${state.hid}` }, scheduleReload)
+    .subscribe();
 }
 
 /* ---------- Telas / autenticação ---------- */
@@ -195,6 +310,8 @@ function traduz(msg = '') {
 }
 async function logout() {
   if (chan) { sb.removeChannel(chan); chan = null; }
+  if (chan2) { sb.removeChannel(chan2); chan2 = null; }
+  await idb.set('snapshot', null);
   await sb.auth.signOut();
 }
 
@@ -210,12 +327,20 @@ async function handleSession(session) {
   await loadMembership();
 }
 async function loadMembership() {
-  const { data, error } = await sb.from('household_members')
-    .select('household_id,role,display_name').eq('user_id', state.user.id).maybeSingle();
-  if (error) return toast(error.message, 'error');
+  state.queue = (await idb.get('queue')) || [];
+  let data = null, error = null;
+  try { ({ data, error } = await sb.from('household_members').select('household_id,role,display_name').eq('user_id', state.user.id).maybeSingle()); }
+  catch (e) { error = e; }
+  if (error) {
+    if (isNetErr(error)) {
+      const s = await idb.get('snapshot');
+      if (s && s.uid === state.user.id) { Object.assign(state, { hid: s.hid, role: s.role, myName: s.myName }); show('app'); await reload(); return; }
+    }
+    return toast(error.message, 'error');
+  }
   if (!data) { state.hid = null; show('onboard'); return; }
   Object.assign(state, { hid: data.household_id, role: data.role, myName: data.display_name });
-  show('app'); subscribe(); await reload();
+  show('app'); subscribe(); await reload(); flushQueue();
 }
 
 function recoveryModal() {
@@ -247,7 +372,9 @@ function render() {
   charts.forEach(c => c.destroy()); charts = [];
   const view = $('#view');
   const active = document.activeElement, keepFocus = active && view.contains(active) && active.dataset.filter ? active.dataset.filter : null;
-  view.innerHTML = { painel: vPainel, caixa: vCaixa, pagar: () => vTitulos('expense'), receber: () => vTitulos('income'), lancamentos: vLanc, orcamento: vOrc, metas: vMetas, contas: vContas, familia: vFamilia, mais: vMais }[state.view]();
+  const me = state.members.find(m => m.user_id === state.user?.id);
+  $('#userBtn').innerHTML = avatar(me?.avatar, state.myName || state.user?.email, 36);
+  view.innerHTML = netBarHtml() + { painel: vPainel, caixa: vCaixa, pagar: () => vTitulos('expense'), receber: () => vTitulos('income'), lancamentos: vLanc, orcamento: vOrc, metas: vMetas, contas: vContas, perfis: vPerfis, familia: vFamilia, mais: vMais }[state.view]();
   if (state.view === 'painel') drawCharts();
   if (keepFocus) { const el = $(`[data-filter="${keepFocus}"]`, view); if (el) { el.focus(); try { el.setSelectionRange(el.value.length, el.value.length); } catch { } } }
 }
@@ -354,8 +481,10 @@ function txRow(t, o = {}) {
   const when = o.cash ? cashDate(t) : t.date;
   const status = o.cash ? '' : paid ? (t.paid_at && t.paid_at !== t.date ? ` · ${inc ? 'recebido' : 'pago'} em ${fmtDate(t.paid_at)}` : '')
     : ` · <b class="${late ? 'expense' : ''}">${late ? 'Atrasado' : (inc ? 'A receber' : 'A pagar')}</b>`;
-  const sub = [fmtDate(when), c?.name || 'Sem categoria', a?.name || '', memberName(t.user_id)].map(esc).join(' · ');
-  const btn = !paid ? `<button class="btn sm primary pay-btn" data-act="tx-pay" data-id="${t.id}">✓ ${inc ? 'Receber' : 'Pagar'} / abater</button>`
+  const it = state.items.find(x => x.id === t.item_id);
+  const sub = [fmtDate(when), c?.name || 'Sem categoria', a?.name || '', memberName(t.user_id), it ? `${(KINDS[it.kind] || KINDS.other)[0]} ${it.name}` : ''].filter(Boolean).map(esc).join(' · ')
+    + (t._pending ? ' · <b>⏳ aguardando envio</b>' : '');
+  const btn = t._pending ? '' : !paid ? `<button class="btn sm primary pay-btn" data-act="tx-pay" data-id="${t.id}">✓ ${inc ? 'Receber' : 'Pagar'} / abater</button>`
     : o.undo ? `<button class="btn sm ghost pay-btn" data-act="tx-unpay" data-id="${t.id}">↩ Estornar baixa</button>` : '';
   return `<div class="item ${paid ? '' : 'pending'}">
     <span class="dot" style="background:${esc(c?.color || '#94a3b8')}"></span>
@@ -363,9 +492,9 @@ function txRow(t, o = {}) {
       <div class="sub">${sub}${status}</div>
       ${o.bal !== undefined ? `<div class="sub num">Saldo: ${brl(o.bal)}</div>` : ''}${btn}</div>
     <div class="num ${inc ? 'income' : 'expense'}"><b>${inc ? '+' : '−'} ${brl(t.amount)}</b></div>
-    <div class="row-actions">
+    ${t._pending ? '' : `<div class="row-actions">
       <button class="icon-btn" title="Editar" data-act="tx-edit" data-id="${t.id}">✏️</button>
-      <button class="icon-btn" title="Excluir" data-act="tx-del" data-id="${t.id}">🗑️</button></div></div>`;
+      <button class="icon-btn" title="Excluir" data-act="tx-del" data-id="${t.id}">🗑️</button></div>`}</div>`;
 }
 function filteredTx() {
   const f = state.f, q = f.q.trim().toLowerCase();
@@ -373,7 +502,7 @@ function filteredTx() {
     (f.period === 'all' || t.date.startsWith(state.month)) &&
     (!f.kind || t.kind === f.kind) && (!f.status || (f.status === 'paid' ? isPaid(t) : !isPaid(t))) && (!f.account || t.account_id === f.account) &&
     (!f.category || t.category_id === f.category || (f.category === '_' && !t.category_id)) &&
-    (!f.member || t.user_id === f.member) &&
+    (!f.member || t.user_id === f.member) && (!f.item || (f.item === '_' ? !t.item_id : t.item_id === f.item)) &&
     (!q || t.description.toLowerCase().includes(q) || (catById(t.category_id)?.name || '').toLowerCase().includes(q)));
 }
 /* ---------- Caixa (extrato de entradas e saídas realizadas) ---------- */
@@ -452,7 +581,8 @@ function vMais() {
   const item = (k, desc) => `<button class="menu-item" data-go="${k}"><span class="mi">${VIEWS[k][0]}</span><span><b>${VIEWS[k][1]}</b><br><span class="small muted">${desc}</span></span><span class="muted">›</span></button>`;
   return `<div class="view-head"><h2>Mais</h2></div><div class="card stack-sm">
     ${item('lancamentos', 'Todos os lançamentos, busca e exportar CSV')}${item('orcamento', 'Categorias e orçamento mensal')}
-    ${item('metas', 'Metas de economia')}${item('contas', 'Contas bancárias e saldos')}${item('familia', 'Membros, convite e minha conta')}</div>`;
+    ${item('metas', 'Metas de economia')}${item('contas', 'Contas bancárias e saldos')}${item('perfis', 'Filhos, veículos, pets… com foto')}${item('familia', 'Membros, convite e minha conta')}
+    <button class="menu-item" data-act="logout"><span class="mi">⎋</span><span><b>Sair da conta</b><br><span class="small muted">${esc(state.user?.email || '')}</span></span><span class="muted">›</span></button></div>`;
 }
 
 function vLanc() {
@@ -468,6 +598,7 @@ function vLanc() {
     <select data-filter="kind">${opt('', 'Todos os tipos', !f.kind)}${opt('expense', 'Despesas', f.kind === 'expense')}${opt('income', 'Receitas', f.kind === 'income')}</select>
     <select data-filter="status">${opt('', 'Todos os status', !f.status)}${opt('pending', 'Pendentes (a pagar/receber)', f.status === 'pending')}${opt('paid', 'Pagos / recebidos', f.status === 'paid')}</select>
     <select data-filter="account">${opt('', 'Todas as contas', !f.account)}${state.accounts.map(a => opt(a.id, a.name, f.account === a.id)).join('')}</select>
+    ${state.items.length ? `<select data-filter="item">${opt('', 'Todos os perfis', !f.item)}${opt('_', 'Sem perfil', f.item === '_')}${state.items.map(i => opt(i.id, `${(KINDS[i.kind] || KINDS.other)[0]} ${i.name}`, f.item === i.id)).join('')}</select>` : ''}
     <select data-filter="category">${opt('', 'Todas as categorias', !f.category)}${opt('_', 'Sem categoria', f.category === '_')}${state.categories.map(c => opt(c.id, c.name, f.category === c.id)).join('')}</select>
     <select data-filter="member">${opt('', 'Todos os membros', !f.member)}${state.members.map(m => opt(m.user_id, m.display_name, f.member === m.user_id)).join('')}</select>
   </div>
@@ -495,6 +626,7 @@ function txModal(t, preset = {}) {
       <label>Conta<select name="account_id">${state.accounts.map(a => `<option value="${a.id}" ${a.id === t.account_id ? 'selected' : ''}>${esc(a.name)}</option>`).join('')}</select></label>
     </div>
     <label>Categoria<select name="category_id"></select></label>
+    ${state.items.length ? `<label>Vincular a (opcional)<select name="item_id"><option value="">Geral da família</option>${state.items.map(i => `<option value="${i.id}" ${i.id === t.item_id ? 'selected' : ''}>${(KINDS[i.kind] || KINDS.other)[0]} ${esc(i.name)}</option>`).join('')}</select></label>` : ''}
     <label class="check"><input type="checkbox" name="paid" ${t.status !== 'pending' ? 'checked' : ''}><span id="paidLbl">Já foi pago</span></label>
     ${isNew ? `<div class="row2">
       <label>Repetição<select name="repeat"><option value="none">Única</option><option value="inst">Parcelado (divide o valor)</option><option value="monthly">Mensal (repete o valor)</option></select></label>
@@ -508,9 +640,15 @@ function txModal(t, preset = {}) {
         household_id: state.hid, kind, description: fd.get('description').trim(), account_id: fd.get('account_id'),
         category_id: fd.get('category_id') || null,
       };
+      const itemSel = fd.get('item_id') || null;
+      if (itemSel) base.item_id = itemSel;
       if (!isNew) {
-        const { error } = await sb.from('transactions').update({ ...base, amount, date, status: paid ? 'paid' : 'pending', paid_at: paid ? (t.paid_at || payDate(date)) : null }).eq('id', t.id);
-        if (error) throw error;
+        if (!navigator.onLine) throw new Error('Sem internet: para editar um lançamento é preciso estar conectado.');
+        const upd = { ...base, amount, date, status: paid ? 'paid' : 'pending', paid_at: paid ? (t.paid_at || payDate(date)) : null };
+        if (!itemSel && t.item_id) upd.item_id = null;
+        const { error } = await sb.from('transactions').update(upd).eq('id', t.id);
+        if (error) throw sqlHint(error);
+        await reload(); toast('Lançamento salvo ✔');
       } else {
         const rep = fd.get('repeat'), n = rep === 'none' ? 1 : Math.min(60, Math.max(2, parseInt(fd.get('times')) || 2));
         const rows = [];
@@ -524,11 +662,11 @@ function txModal(t, preset = {}) {
           const d = addMonths(date, i), p = paid && (i === 0 || d <= tdy);
           rows.push({ ...base, description: desc, amount: a, date: d, status: p ? 'paid' : 'pending', paid_at: p ? payDate(d) : null });
         }
-        const { error } = await sb.from('transactions').insert(rows);
-        if (error) throw error;
+        const queued = await insertTx(rows);
+        await reload();
+        toast(queued ? '📴 Salvo no aparelho — será enviado quando a internet voltar' : 'Lançamento salvo ✔');
       }
-      await reload(); toast('Lançamento salvo ✔');
-    });
+    }, { offlineOk: true });
   const sync = (keep) => {
     const k = $('[name=kind]:checked', f).value;
     $('[name=category_id]', f).innerHTML = catOptions(k, keep);
@@ -694,16 +832,85 @@ function vFamilia() {
         <button class="btn sm" data-act="copy-code">📋 Copiar</button>
         ${owner ? '<button class="btn sm" data-act="regen-code">🔄 Novo código</button><button class="btn sm" data-act="rename-hh">✏️ Renomear</button>' : ''}</div></div>
     <div class="card"><h3>Membros</h3><div class="list">${state.members.map(m => `
-      <div class="item"><div class="grow"><div class="title">${esc(m.display_name)} ${m.user_id === state.user.id ? '<span class="muted small">(você)</span>' : ''}</div>
+      <div class="item">${avatar(m.avatar, m.display_name, 42)}<div class="grow"><div class="title">${esc(m.display_name)} ${m.user_id === state.user.id ? '<span class="muted small">(você)</span>' : ''}</div>
         <div class="sub">${m.role === 'owner' ? 'Administrador' : 'Membro'}</div></div>
         ${owner && m.user_id !== state.user.id ? `<button class="btn sm danger" data-act="kick" data-id="${m.user_id}">Remover</button>` : ''}</div>`).join('')}</div></div>
   </div>
   <div class="card"><h3>Minha conta</h3>
     <p class="muted small">${esc(state.user.email)}</p>
     <div class="actions" style="justify-content:flex-start;flex-wrap:wrap">
+      <button class="btn sm" data-act="u-photo">📷 Alterar minha foto</button>
       <button class="btn sm" data-act="rename-me">Alterar meu nome</button>
       <button class="btn sm" data-act="logout">Sair</button>
       <button class="btn sm danger" data-act="leave">${state.members.length === 1 ? 'Excluir família' : 'Sair da família'}</button></div></div>`;
+}
+function ageStr(d) {
+  if (!d) return '';
+  const [y, m, dd] = d.split('-').map(Number), n = new Date();
+  let months = (n.getFullYear() - y) * 12 + (n.getMonth() + 1 - m) - (n.getDate() < dd ? 1 : 0);
+  if (months < 0) return '';
+  return months < 24 ? `${months} ${months === 1 ? 'mês' : 'meses'}` : `${Math.floor(months / 12)} anos`;
+}
+function vPerfis() {
+  const mk = state.month;
+  const stat = it => {
+    const l = state.tx.filter(t => t.item_id === it.id && t.kind === 'expense');
+    return { m: txSum(l.filter(t => t.date.startsWith(mk)), 'expense'), all: txSum(l, 'expense') };
+  };
+  const card = it => {
+    const [emo, lbl] = KINDS[it.kind] || KINDS.other, s = stat(it), ph = safeImg(it.photo), age = ageStr(it.birth_date);
+    return `<div class="card pcard"><div class="pcover">${ph ? `<img src="${ph}" alt="">` : `<span>${emo}</span>`}</div>
+      <div class="pbody"><div class="title">${esc(it.name)}</div>
+        <div class="sub">${esc(lbl)}${it.detail ? ' · ' + esc(it.detail) : ''}${age ? ' · ' + age : ''}</div>
+        <div class="pstat"><div><span class="small muted">No mês</span><br><b class="expense num">${brl(s.m)}</b></div>
+          <div><span class="small muted">Total gasto</span><br><b class="num">${brl(s.all)}</b></div></div>
+        <div class="actions" style="justify-content:flex-start;flex-wrap:wrap">
+          <button class="btn sm" data-act="item-tx" data-id="${it.id}">Ver gastos</button>
+          <button class="btn sm" data-act="item-edit" data-id="${it.id}">✏️ Editar</button></div></div></div>`;
+  };
+  const groups = Object.entries(KINDS).map(([k, [emo, lbl]]) => [k, emo, lbl, state.items.filter(i => i.kind === k)]).filter(g => g[3].length);
+  return `<div class="view-head"><h2>Perfis</h2><button class="btn sm primary" data-act="item-new">＋ Adicionar</button></div>
+  <p class="muted small" style="margin-top:0">Cadastre filhos, veículos, pets… com foto. Ao lançar um gasto você pode vincular a um perfil e ver quanto cada um custa.</p>
+  ${!state.itemsOk ? '<div class="card" style="margin-bottom:1rem"><b>⚠️ Falta ativar no banco.</b><p class="small muted" style="margin:.3rem 0 0">Rode o SQL <code>migracao_perfis_offline.sql</code> no Supabase (SQL Editor → Run) e recarregue.</p></div>' : ''}
+  ${groups.length ? groups.map(([k, emo, lbl, list]) => `<div class="section-title">${emo} ${lbl}</div><div class="pgrid">${list.map(card).join('')}</div>`).join('')
+    : (state.itemsOk ? '<div class="card empty">Nenhum perfil ainda. Toque em <b>＋ Adicionar</b> para cadastrar um filho, veículo ou pet.</div>' : '')}`;
+}
+function itemModal(it) {
+  const isNew = !it; it = it || { kind: 'child', name: '', detail: '', birth_date: '', photo: '' };
+  let photo = safeImg(it.photo);
+  const f = modal(isNew ? 'Novo perfil' : 'Editar perfil', `
+    <div class="photo-pick"><div class="pp-prev" id="ppPrev"></div>
+      <div class="pp-btns"><button type="button" class="btn sm" id="ppSel">📷 Escolher foto</button><button type="button" class="btn sm ghost" id="ppClr">Remover foto</button></div></div>
+    <label>Tipo<select name="kind">${Object.entries(KINDS).map(([k, [emo, lbl]]) => `<option value="${k}" ${it.kind === k ? 'selected' : ''}>${emo} ${lbl}</option>`).join('')}</select></label>
+    <label>Nome<input name="nome" required maxlength="60" value="${esc(it.name)}" placeholder="Ex.: Pedro, Gol branco, Thor"></label>
+    <label id="detLbl">Detalhe (opcional)<input name="detail" maxlength="80" value="${esc(it.detail || '')}"></label>
+    <label id="birthLbl">Nascimento<input type="date" name="birth" value="${it.birth_date || ''}"></label>
+    ${isNew ? '' : '<button type="button" class="btn danger sm" data-del>Excluir perfil</button>'}`,
+    async fd => {
+      const row = { name: fd.get('nome').trim(), kind: fd.get('kind'), detail: fd.get('detail').trim() || null, birth_date: fd.get('birth') || null, photo: photo || null };
+      const { error } = isNew ? await sb.from('family_items').insert({ ...row, household_id: state.hid }) : await sb.from('family_items').update(row).eq('id', it.id);
+      if (error) throw sqlHint(error);
+      await reload(); toast('Perfil salvo ✔');
+    });
+  const kindSel = $('[name=kind]', f);
+  const prev = () => { $('#ppPrev', f).innerHTML = photo ? `<img src="${photo}" alt="">` : `<span>${(KINDS[kindSel.value] || KINDS.other)[0]}</span>`; };
+  const hints = { child: 'Escola / série', person: 'Parentesco ou observação', vehicle: 'Placa · ano · modelo', pet: 'Raça', other: 'Detalhe' };
+  const sync = () => {
+    $('#detLbl', f).firstChild.textContent = hints[kindSel.value] + ' (opcional)';
+    $('#birthLbl', f).classList.toggle('hidden', kindSel.value === 'vehicle' || kindSel.value === 'other');
+    prev();
+  };
+  kindSel.onchange = sync; sync();
+  $('#ppSel', f).onclick = async () => { try { const d = await pickImage(480); if (d) { photo = d; prev(); } } catch (e) { toast(e.message, 'error'); } };
+  $('#ppClr', f).onclick = () => { photo = ''; prev(); };
+  const del = $('[data-del]', f);
+  if (del) del.onclick = async () => {
+    if (!navigator.onLine) return toast('Sem internet: conecte-se para excluir.', 'error');
+    if (!confirm('Excluir este perfil? Os lançamentos continuam, só perdem o vínculo.')) return;
+    const { error } = await sb.from('family_items').delete().eq('id', it.id);
+    if (error) return toast(error.message, 'error');
+    $('#modal').close(); await reload(); toast('Perfil excluído');
+  };
 }
 function promptModal(title, label, value, onSave) {
   modal(title, `<label>${esc(label)}<input name="v" required maxlength="80" value="${esc(value)}"></label>`,
@@ -713,6 +920,22 @@ function promptModal(title, label, value, onSave) {
 /* ---------- Ações (delegação de eventos) ---------- */
 const ACTIONS = {
   'tx-new': () => txModal(),
+  'item-new': () => itemModal(), 'item-edit': id => itemModal(state.items.find(i => i.id === id)),
+  'item-tx': id => { state.f.item = id; state.f.period = 'all'; state.f.status = ''; setView('lancamentos'); },
+  'u-photo': async () => {
+    try {
+      const d = await pickImage(256, true); if (!d) return;
+      if (!navigator.onLine) throw new Error('Sem internet: conecte-se para trocar a foto.');
+      const { error } = await sb.from('household_members').update({ avatar: d }).eq('household_id', state.hid).eq('user_id', state.user.id);
+      if (error) throw sqlHint(error);
+      await reload(); toast('Foto atualizada ✔');
+    } catch (e) { toast(e.message || String(e), 'error'); }
+  },
+  'u-photo-rm': async () => {
+    if (!navigator.onLine) return toast('Sem internet: conecte-se para remover a foto.', 'error');
+    const { error } = await sb.from('household_members').update({ avatar: null }).eq('household_id', state.hid).eq('user_id', state.user.id);
+    error ? toast(sqlHint(error).message, 'error') : (await reload(), toast('Foto removida'));
+  },
   'cx-in': () => txModal(null, { kind: 'income', paid: true }),
   'cx-out': () => txModal(null, { kind: 'expense', paid: true }),
   'new-pay': () => txModal(null, { kind: 'expense', paid: false }),
@@ -819,13 +1042,44 @@ const ACTIONS = {
   logout,
 };
 
+const NEEDS_ONLINE = new Set(['tx-del', 'tx-unpay', 'goal-del', 'acc-del', 'regen-code', 'kick', 'leave', 'u-photo-rm']);
+function runAct(el) {
+  const act = el.dataset.act, fn = ACTIONS[act]; if (!fn) return;
+  if (!navigator.onLine && NEEDS_ONLINE.has(act)) return toast('Sem internet: esta ação precisa de conexão.', 'error');
+  fn(el.dataset.id, el);
+}
+function openUserMenu() {
+  const m = $('#userMenu'), me = state.members.find(x => x.user_id === state.user?.id), name = state.myName || state.user?.email || '';
+  if (!m.classList.contains('hidden')) return m.classList.add('hidden');
+  m.innerHTML = `<div class="um-head">${avatar(me?.avatar, name, 56)}<div style="min-width:0"><b>${esc(name)}</b><div class="small muted" style="overflow:hidden;text-overflow:ellipsis">${esc(state.user?.email || '')}</div></div></div>
+    <button class="um-item" data-act="u-photo">📷 ${me?.avatar ? 'Trocar' : 'Adicionar'} minha foto</button>
+    ${me?.avatar ? '<button class="um-item" data-act="u-photo-rm">🗑️ Remover foto</button>' : ''}
+    <button class="um-item" data-act="rename-me">✏️ Alterar meu nome</button>
+    <button class="um-item" data-go="familia">👨‍👩‍👧 Família e convite</button>
+    <button class="um-item out" data-act="logout">⎋ Sair da conta</button>`;
+  m.classList.remove('hidden');
+}
 function initApp() {
   $('#view').addEventListener('click', e => {
     const go = e.target.closest('[data-go]');
     if (go) { e.preventDefault(); return setView(go.dataset.go); }
     const el = e.target.closest('[data-act]'); if (!el) return;
-    const fn = ACTIONS[el.dataset.act]; fn && fn(el.dataset.id, el);
+    runAct(el);
   });
+  document.addEventListener('click', e => {
+    const menu = $('#userMenu');
+    if (e.target.closest('#userBtn')) { openUserMenu(); return; }
+    if (e.target.closest('#userMenu')) {
+      const g = e.target.closest('[data-go]'), el = e.target.closest('[data-act]');
+      if (g) setView(g.dataset.go); else if (el) runAct(el);
+      if (g || el) menu.classList.add('hidden');
+      return;
+    }
+    menu.classList.add('hidden');
+  });
+  window.addEventListener('online', () => { render(); flushQueue(); });
+  window.addEventListener('offline', () => render());
+  setInterval(() => { if (state.queue.length) flushQueue(); }, 30000);
   const onFilter = e => {
     const k = e.target.dataset.filter; if (!k) return;
     state[e.target.dataset.scope || 'f'][k] = e.target.value; state.limit = 100; render();
@@ -847,6 +1101,8 @@ function initApp() {
 
 /* ---------- Boot ---------- */
 initAuthUI(); initApp(); setAuthMode('login');
+if ('serviceWorker' in navigator && /^https?:$/.test(location.protocol))
+  window.addEventListener('load', () => navigator.serviceWorker.register('sw.js').catch(() => { }));
 sb.auth.onAuthStateChange((event, session) => {
   // não aguardar chamadas ao Supabase dentro do callback (evita deadlock)
   setTimeout(() => (event === 'PASSWORD_RECOVERY' ? recoveryModal() : handleSession(session)), 0);
